@@ -62,10 +62,10 @@ function sortNodeWidgets(node) {
     if (!Array.isArray(w.options?.values)) continue;
     const current = w.value;
     ciSort(w.options.values);
-    // Restore selection (localeCompare may have moved it)
-    w.value = w.options.values.includes(current)
-      ? current
-      : w.options.values[0] ?? current;
+    // Always restore the original value — if the model/lora isn't in the list
+    // (e.g. loading a workflow with missing assets) we must leave it as-is so
+    // ComfyUI can highlight it as missing, just like it does without this extension.
+    w.value = current;
   }
 }
 

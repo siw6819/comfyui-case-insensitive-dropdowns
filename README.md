@@ -11,7 +11,7 @@ The folder layout must be exactly:
 ```
 ComfyUI/
 └── custom_nodes/
-    └── comfyui-case-insensitive-dropdowns/        ← this folder name
+    └── alphabetical_sort/        ← this folder name
         ├── __init__.py
         └── js/
             └── alphabetical_sort.js
