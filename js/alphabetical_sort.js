@@ -12,6 +12,10 @@ import { app } from "../../scripts/app.js";
  *  2. nodeCreated — sort widgets on any node instance after creation
  *     (catches workflow-load and dynamic nodes).
  *  3. afterConfigureGraph — re-sort everything after a full graph load.
+ *  4. fetch() intercept — rgthree's Power Lora Loader fetches its lora list
+ *     directly from the backend at runtime rather than using standard combo
+ *     widgets. We intercept those responses and sort them at the source so
+ *     rgthree's own picker displays them in order.
  *
  * The extension loads automatically once the folder is in custom_nodes.
  * The Python-backed "Alphabetical Sort 🔤" node is optional; it just makes
@@ -70,6 +74,84 @@ function sortNodeWidgets(node) {
 }
 
 // ---------------------------------------------------------------------------
+// rgthree Power Lora Loader — fetch() intercept
+//
+// rgthree does not use standard ComfyUI combo widgets. Instead its lora slots
+// are fully custom widgets (type: "custom") that fetch the lora list directly
+// from the backend at runtime via their own API calls. The selected value is
+// stored as w._value.lora, and the picker list is built fresh from the fetch
+// response each time the user opens the dropdown.
+//
+// Because there is no widget.options.values array to sort, we must intercept
+// the fetch() calls that supply that list and sort the data at the source.
+//
+// rgthree fetches from two possible endpoints:
+//   • /rgthree/loras          — rgthree's own lora-info endpoint (returns [{name, ...}])
+//   • /object_info            — standard ComfyUI node-info endpoint (returns node defs)
+//
+// We wrap the global fetch once, detect those URLs, parse + sort the response,
+// then hand back a synthetic Response so the caller never knows we intervened.
+// ---------------------------------------------------------------------------
+
+function installFetchIntercept() {
+  const _fetch = window.fetch.bind(window);
+
+  window.fetch = async function (input, init) {
+    const url = typeof input === "string" ? input : input?.url ?? "";
+
+    // ── rgthree /rgthree/api/loras ──────────────────────────────────────────
+    // Response shape: [{file, path, modified, ...}, ...]
+    // rgthreeApi.getLoras() fetches this, caches the promise, then
+    // showLoraChooser maps it via loras.map(l => l.file) to build the picker.
+    // Sorting here means the cached promise already contains sorted data so
+    // every picker opened from it will be in order.
+    if (url.includes("/rgthree/api/loras")) {
+      const response = await _fetch(input, init);
+      const clone    = response.clone();
+      try {
+        const data = await clone.json();
+        if (Array.isArray(data)) {
+          data.sort((a, b) =>
+            String(a.file ?? a).localeCompare(String(b.file ?? b), undefined, { sensitivity: "base" })
+          );
+        }
+        return new Response(JSON.stringify(data), {
+          status:  response.status,
+          headers: response.headers,
+        });
+      } catch {
+        return response;
+      }
+    }
+
+    // ── /object_info (covers LoraLoader and similar standard nodes) ─────────
+    // Response shape: { NodeTypeName: { input: { required: { lora_name: [[...], {}] } } } }
+    // This is also what beforeRegisterNodeDef sorts, but intercepting here
+    // catches any runtime refresh calls that bypass that hook.
+    if (url.includes("/object_info")) {
+      const response = await _fetch(input, init);
+      const clone    = response.clone();
+      try {
+        const data = await clone.json();
+        for (const nodeDef of Object.values(data)) {
+          sortNodeDataCombos(nodeDef);
+        }
+        return new Response(JSON.stringify(data), {
+          status:  response.status,
+          headers: response.headers,
+        });
+      } catch {
+        return response;
+      }
+    }
+
+    return _fetch(input, init);
+  };
+
+  console.log("[AlphabeticalSort] fetch() intercept installed for rgthree lora endpoints.");
+}
+
+// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -102,8 +184,13 @@ app.registerExtension({
     }
   },
 
-  /** Hook 4 — one-time startup log. */
+  /**
+   * Hook 4 — one-time startup: install the fetch intercept and log.
+   * setup() runs before any nodes are registered, so the intercept is in
+   * place before rgthree makes its first /rgthree/loras call.
+   */
   async setup() {
+    installFetchIntercept();
     console.log(`[AlphabeticalSort] Combo dropdowns will sort case-insensitively.`);
   },
 });
